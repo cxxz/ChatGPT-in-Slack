@@ -1,4 +1,5 @@
 import json
+import os
 import logging
 import re
 import threading
@@ -34,6 +35,7 @@ from app.openai_ops import (
     generate_slack_thread_summary,
     generate_proofreading_result,
     generate_chatgpt_response,
+    generate_better_writing,
 )
 from app.slack_constants import DEFAULT_LOADING_TEXT, TIMEOUT_ERROR_MESSAGE
 from app.slack_ops import (
@@ -77,6 +79,21 @@ from app.slack_ui import (
     build_image_variations_input_modal,
 )
 
+
+# File to persist timestamps
+TIMESTAMP_FILE = "./data/conversations_start_ts.json"
+
+# Load existing timestamps from file
+if os.path.exists(TIMESTAMP_FILE):
+    with open(TIMESTAMP_FILE, "r") as f:
+        conversations_timestamps = json.load(f)
+else:
+    conversations_timestamps = {}
+
+# Function to save timestamps to file
+def save_timestamps():
+    with open(TIMESTAMP_FILE, "w") as f:
+        json.dump(conversations_timestamps, f)
 
 #
 # Listener functions
@@ -291,6 +308,9 @@ def respond_to_new_message(
 
     wip_reply = None
     try:
+
+        ## CONG TEST
+        # print("CONG TEST payload", payload)
         is_in_dm_with_bot = payload.get("channel_type") == "im"
         is_thread_for_this_app = False
         thread_ts = payload.get("thread_ts")
@@ -298,18 +318,30 @@ def respond_to_new_message(
             return
 
         messages_in_context = []
+        user_id = context.actor_user_id or context.user_id
         if is_in_dm_with_bot is True and thread_ts is None:
             # In the DM with the bot; this is not within a thread
             past_messages = client.conversations_history(
                 channel=context.channel_id,
                 include_all_metadata=True,
                 limit=100,
+                # oldest=start_ts,
             ).get("messages", [])
             past_messages.reverse()
+            # logger.debug(f"CONG TEST length of past_messages: {len(past_messages)}")
             # Remove old messages
+            start_ts = time.time() - 86400.0
+            if user_id in conversations_timestamps:
+                start_ts = conversations_timestamps[user_id]
+            
+            # logger.debug(f"CONG TEST current_ts: {time.time()}")
+            # logger.debug(f"CONG TEST start_ts: {start_ts}")
             for message in past_messages:
-                seconds = time.time() - float(message.get("ts"))
-                if seconds < 86400:  # less than 1 day
+                ## CONG TEST
+                # logger.debug(f"CONG TEST message {message}")
+                msg_ts = float(message.get("ts"))
+                if msg_ts > start_ts:
+                    # logger.debug(f'CONG TEST msg_ts: {msg_ts}, {message["text"]}')
                     messages_in_context.append(message)
             is_thread_for_this_app = True
         else:
@@ -344,7 +376,7 @@ def respond_to_new_message(
             return
 
         messages = []
-        user_id = context.actor_user_id or context.user_id
+        
         last_assistant_idx = -1
         indices_to_remove = []
         for idx, reply in enumerate(messages_in_context):
@@ -1047,6 +1079,75 @@ def display_chat_from_scratch_result(
             view=build_from_scratch_error_modal(text=text, e=e),
         )
 
+def start_new_conversation(
+    context: BoltContext,
+    payload: dict,
+    client: WebClient,
+    logger: logging.Logger,
+):
+    # logger.debug("CONG TEST start_new_conversation")
+    # logger.debug(f"CONG TEST payload: {payload}")
+    user_id = payload["user_id"]
+    logger.debug(f"CONG TEST user_id: {user_id}")
+
+    client.chat_postMessage(
+        channel=context.channel_id,
+        text="Start a new conversation",
+    )
+
+    timestamp = time.time()
+    conversations_timestamps[user_id] = timestamp
+    save_timestamps()
+
+    ## CONG TEST
+    logger.debug(f"CONG TEST Conversation start time reset to {timestamp}")
+
+def start_better_writing(
+    context: BoltContext,
+    payload: dict,
+    client: WebClient,
+    logger: logging.Logger,
+):
+    
+    openai_api_key = context.get("OPENAI_API_KEY")
+    if openai_api_key is None:
+        return
+    
+    # logger.debug("CONG TEST start_new_conversation")
+    # logger.debug(f"CONG TEST payload: {payload}")
+    user_id = payload["user_id"]
+    original_text = payload["text"]
+    # logger.debug(f"CONG TEST user_id: {user_id}")
+
+    client.chat_postMessage(
+        channel=context.channel_id,
+        text=f"Start better writing of:\n{original_text}",
+    )
+
+    result = generate_better_writing(
+            context=context,
+            logger=logger,
+            openai_api_key=openai_api_key,
+            original_text=original_text,
+            timeout_seconds=OPENAI_TIMEOUT_SECONDS,
+    )
+
+    client.chat_postMessage(
+        channel=context.channel_id,
+        text="Here is the improved version:\n",
+    )
+
+    client.chat_postMessage(
+        channel=context.channel_id,
+        text=result,
+    )
+
+    timestamp = time.time()
+    conversations_timestamps[user_id] = timestamp
+    save_timestamps()
+
+    ## CONG TEST
+    logger.debug(f"CONG TEST Conversation start time reset to {timestamp}")
 
 def register_listeners(app: App):
 
@@ -1067,6 +1168,12 @@ def register_listeners(app: App):
     # Chat with the bot
     app.event("app_mention")(ack=just_ack, lazy=[respond_to_app_mention])
     app.event("message")(ack=just_ack, lazy=[respond_to_new_message])
+
+    # Register the command handler
+    app.command("/nc")(ack=just_ack, lazy=[start_new_conversation])
+
+    # Register the command handler
+    app.command("/bw")(ack=just_ack, lazy=[start_better_writing])
 
     # Summarize a thread
     app.shortcut("summarize-thread")(show_summarize_option_modal)

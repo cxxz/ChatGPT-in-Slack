@@ -561,6 +561,46 @@ def generate_slack_thread_summary(
     return openai_response.model_dump()["choices"][0]["message"]["content"]
 
 
+def generate_better_writing(
+    *,
+    context: BoltContext,
+    logger: logging.Logger,
+    openai_api_key: str,
+    original_text: str,
+    timeout_seconds: int,
+) -> str:
+    system_content = "You are an assistant that revises a user's input to improve its writing quality. Make sure to:\n- Fix spelling and grammar\n- Make sentences more clear and concise\n- Split up run-on sentences\n- Reduce repetition\n- When replacing words, do not make them more complex or difficult than the original\n- If the text contains quotes, repeat the text inside the quotes verbatim\n- Do not change the meaning of the text\n- Do not remove any markdown formatting in the text, like headers, bullets, or checkboxes\n- Do not use overly formal language\nIf user's input is markdown format, output in markdown format.\nIf user's input is plain text, output in plain text.\nIf user's input is HTML format, output in HTML.\nIf user's input is Latex format, output in Latex.\nFirst, detect the language of user's input. If the language is not clear, use English.\nThen, output using the detected language.\n"
+    system_content += "Lastly, remove leading and ending triple quotes from generated text."
+
+    messages = [
+        {
+            "role": "system",
+            "content": system_content,
+        },
+        {
+            "role": "user",
+            "content": f"Now please improve the writing of the text given to you:\n'''\n{original_text}\n'''\n\nHere is the improved version of the text:\n"
+        },
+    ]
+    start_time = time.time()
+    openai_response = make_synchronous_openai_call(
+        openai_api_key=openai_api_key,
+        model=context["OPENAI_MODEL"],
+        temperature=context["OPENAI_TEMPERATURE"],
+        messages=messages,
+        user=context.actor_user_id,
+        openai_api_type=context["OPENAI_API_TYPE"],
+        openai_api_base=context["OPENAI_API_BASE"],
+        openai_api_version=context["OPENAI_API_VERSION"],
+        openai_deployment_id=context["OPENAI_DEPLOYMENT_ID"],
+        openai_organization_id=context["OPENAI_ORG_ID"],
+        timeout_seconds=timeout_seconds,
+    )
+    spent_time = time.time() - start_time
+    logger.debug(f"Improve writing took {spent_time} seconds")
+    logger.debug(f"CONG TEST openai response {openai_response}")
+    return openai_response.model_dump()["choices"][0]["message"]["content"]
+
 def generate_proofreading_result(
     *,
     context: BoltContext,
